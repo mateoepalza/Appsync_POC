@@ -1,0 +1,471 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: SQL-Data-Service
+
+Parameters:
+  Stage:
+    Type: String
+    Description: Stage name
+    MinLength: "3"
+    AllowedValues:
+      - lab
+      - dev
+      - staging
+      - prod
+
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+    Handler: handler.lambda_handler
+    Layers:
+      - !Ref DependenciesLayer
+
+Resources:
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${AWS::StackName}-${Stage}"
+      RetentionInDays: 14
+
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.11
+      ContentUri: ./src/shared
+      LayerName: !Sub ${AWS::StackName}-Dependencies
+    Metadata:
+      BuildMethod: python3.11
+
+  GetYearlyReviewFeederHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-${Stage}-get-yearly-review-feeder"
+      CodeUri: ./src/handlers/get_yearly_review_feeder_handler
+      Timeout: 300
+
+  GetYearlyReviewFeederLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetYearlyReviewFeederHandler}"
+      RetentionInDays: 14
+
+  GetYearlyReviewScoopSavesHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-${Stage}-get-yearly-review-scoop-saves"
+      CodeUri: ./src/handlers/get_yearly_review_scoop_saves_handler
+      Timeout: 300
+
+  GetYearlyReviewScoopSavesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetYearlyReviewScoopSavesHandler}"
+      RetentionInDays: 14
+
+  GetYearlyReviewWeightHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-${Stage}-get-yearly-review-weight"
+      CodeUri: ./src/handlers/get_yearly_review_weight_handler
+      Timeout: 300
+
+  GetYearlyReviewWeightLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetYearlyReviewWeightHandler}"
+      RetentionInDays: 14
+
+  AppSyncAPIServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowDynamoDB
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt CachingAppsyncTable.Arn
+        - PolicyName: AppSyncLambdaInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt GetYearlyReviewFeederHandler.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt GetYearlyReviewScoopSavesHandler.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt GetYearlyReviewWeightHandler.Arn
+
+  AppSyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/appsync/apis/${AppSyncAPI.ApiId}"
+      RetentionInDays: 14  # Adjust the retention period as needed
+
+  AppSyncCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowAppSyncLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:log-group:/aws/appsync/apis/*:*
+
+  AppSyncAPI:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-${Stage}-appsync-test"
+      AuthenticationType: "API_KEY"
+      ApiType: GRAPHQL
+      LogConfig:
+        CloudWatchLogsRoleArn: !GetAtt AppSyncCloudWatchLogsRole.Arn
+        FieldLogLevel: ALL
+        ExcludeVerboseContent: false
+
+  AppSyncApiKeyAPI:
+    Type: AWS::AppSync::ApiKey
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+
+  AppSyncSchemaAPI:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Definition: |
+        input getYearlyReviewInput {
+          userId: String!
+        }
+
+        type petStatistic {
+          name: String!
+          weight: Int!
+          visits: Int!
+        }
+
+        type feederStatistic {
+            total: Int!
+        }
+
+        type scoopSaveStatistic {
+            total: Int!
+        }
+
+        type weightStatistic{
+            pets: [petStatistic]!
+        }
+
+        type yearlyReview {
+            weight: weightStatistic!
+            scoopSaves: scoopSaveStatistic!
+            feeder: feederStatistic!
+        }
+
+        type Query {
+            getYearlyReview(input: getYearlyReviewInput!): yearlyReview!
+        }
+
+        schema {
+            query: Query
+        }
+
+  # Function Configuration
+
+  ## DynamoDB Function Configuration
+
+  SaveCacheToDynamoDBFunctionConfiguration:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: "save_cache_from_dynamodb"
+      DataSourceName: !GetAtt CacheDynamoDBDataSource.Name
+      FunctionVersion: "2018-05-29"
+      RequestMappingTemplate: |
+        #if($ctx.stash.result)
+          #return($ctx.stash.result)
+        #end
+        #set($ttl = $util.time.nowEpochSeconds() + 3600 * 24 * 30)
+        {
+          "version" : "2018-05-29",
+          "operation" : "PutItem",
+          "key" : {
+            "id" : $util.dynamodb.toStringJson("${ctx.source.arguments.input.userId}-${context.info.fieldName}")
+          },
+          "attributeValues": {
+            "ttl": $util.dynamodb.toNumberJson($ttl),
+            "content": $util.dynamodb.toStringJson($utils.toJson($ctx.prev.result))
+          }
+        }
+      ResponseMappingTemplate: |
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #end
+        $utils.toJson($ctx.prev.result)
+
+  GetCacheFromDynamoDBFunctionConfiguration:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: "get_cache_from_dynamodb"
+      DataSourceName: !GetAtt CacheDynamoDBDataSource.Name
+      FunctionVersion: "2018-05-29"
+      RequestMappingTemplate: |
+        {
+          "version": "2018-05-29",
+          "operation": "GetItem",
+          "key": {
+            "id": $util.dynamodb.toStringJson("${context.source.arguments.input.userId}-${context.info.fieldName}")
+          }
+        }
+      ResponseMappingTemplate: |
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #end
+        #if($ctx.result)
+          $util.qr($ctx.stash.put("result", $util.parseJson($ctx.result.content)))
+        #end
+        {}
+
+  ## Lambdas function configuration
+
+  WeightLambdaPipelineFunction:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: "weight_lambda_pipeline_function_configuration"
+      DataSourceName: !GetAtt GetYearlyReviewWeightLambdaDataSource.Name
+      FunctionVersion: "2018-05-29"
+      RequestMappingTemplate: |
+        #if($ctx.stash.result)
+          #return($ctx.stash.result)
+        #end
+        {
+          "version" : "2018-05-29",
+          "operation": "Invoke",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: $util.toJson($ctx.result)
+
+  ScoopSavesLambdaPipelineFunction:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: "scoop_saves_lambda_pipeline_function_configuration"
+      DataSourceName: !GetAtt GetYearlyReviewScoopSavesLambdaDataSource.Name
+      FunctionVersion: "2018-05-29"
+      RequestMappingTemplate: |
+        #if($ctx.stash.result)
+          #return($ctx.stash.result)
+        #end
+        {
+          "version" : "2018-05-29",
+          "operation": "Invoke",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: $util.toJson($ctx.result)
+
+  FeederLambdaPipelineFunction:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: "feeder_lambda_pipeline_function_configuration"
+      DataSourceName: !GetAtt GetYearlyReviewFeederLambdaDataSource.Name
+      FunctionVersion: "2018-05-29"
+      RequestMappingTemplate: |
+        #if($ctx.stash.result)
+          #return($ctx.stash.result)
+        #end
+        {
+          "version" : "2018-05-29",
+          "operation": "Invoke",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: $util.toJson($ctx.result)
+
+  # Data Sources
+
+  CacheDynamoDBDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: !Sub "${Stage}_cache_dynamodb_data_source"
+      Type: AMAZON_DYNAMODB
+      DynamoDBConfig:
+        AwsRegion: us-east-1
+        TableName: !Ref CachingAppsyncTable
+      ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
+
+  GetYearlyReviewWeightLambdaDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: !Sub "${Stage}_get_yearly_review_weight_lambda_data_source"
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetYearlyReviewWeightHandler.Arn
+      ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
+
+  GetYearlyReviewScoopSavesLambdaDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: !Sub "${Stage}_get_yearly_review_scoop_saves_lambda_data_source"
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetYearlyReviewScoopSavesHandler.Arn
+      ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
+
+  GetYearlyReviewFeederLambdaDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: !Sub "${Stage}_get_yearly_review_feeder_lambda_data_source"
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetYearlyReviewFeederHandler.Arn
+      ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
+
+  GetYearlyReviewLambdaDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: !Sub "${Stage}_get_yearly_review_lambda_data_source"
+      Type: NONE
+
+  # Resolvers
+
+  GetYearlyReviewResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Query
+      FieldName: getYearlyReview
+      DataSourceName: !GetAtt GetYearlyReviewLambdaDataSource.Name
+      RequestMappingTemplate: |
+        {
+          "version" : "2018-05-29",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: |
+        $util.toJson($ctx.result)
+
+  ## Resolvers functions
+
+  GetYearlyReviewWeightResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: yearlyReview
+      FieldName: weight
+      Kind: PIPELINE
+      PipelineConfig:
+        Functions:
+          - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
+          - !GetAtt WeightLambdaPipelineFunction.FunctionId
+          - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
+      RequestMappingTemplate: |
+        {
+          "version" : "2018-05-29",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: |
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #end
+        $util.toJson($ctx.result)
+
+  GetYearlyReviewFeederResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: yearlyReview
+      FieldName: feeder
+      Kind: PIPELINE
+      PipelineConfig:
+        Functions:
+          - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
+          - !GetAtt FeederLambdaPipelineFunction.FunctionId
+          - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
+      RequestMappingTemplate: |
+        {
+          "version" : "2018-05-29",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: |
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #end
+        $util.toJson($ctx.result)
+
+  GetYearlyReviewScoopSavesResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: yearlyReview
+      FieldName: scoopSaves
+      Kind: PIPELINE
+      PipelineConfig:
+        Functions:
+          - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
+          - !GetAtt ScoopSavesLambdaPipelineFunction.FunctionId
+          - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
+      RequestMappingTemplate: |
+        {
+          "version" : "2018-05-29",
+          "payload": $util.toJson($ctx)
+        }
+      ResponseMappingTemplate: |
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #end
+        $util.toJson($ctx.result)
+
+  # DynamoDB Table
+
+  CachingAppsyncTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-${Stage}-caching-appsync"
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
