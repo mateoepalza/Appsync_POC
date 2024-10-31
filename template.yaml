@@ -244,7 +244,9 @@ Resources:
         #if($ctx.stash.result)
           #return($ctx.stash.result)
         #end
-        #set($ttl = $util.time.nowEpochSeconds() + 3600 * 24 * 30)
+        #set($endOfDayDateStr = "$!{util.time.nowFormatted("yyyy-MM-dd", "UTC")}T23:59:59Z")
+        #set($endOfDayEpoch = $util.time.parseFormattedToEpochSeconds($endOfDayDateStr, "yyyy-MM-dd'T'HH:mm:ss'Z'"))
+        #set($ttl = $endOfDayEpoch * 1000)
         {
           "version" : "2018-05-29",
           "operation" : "PutItem",
