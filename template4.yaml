@@ -41,69 +41,43 @@ Resources:
     Metadata:
       BuildMethod: python3.11
 
-  AllDataHandler:
+  GetYearlyReviewFeederHandler:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-${Stage}-all-data"
-      CodeUri: ./src/handlers/all_handler
+      FunctionName: !Sub "${AWS::StackName}-${Stage}-get-yearly-review-feeder"
+      CodeUri: ./src/handlers/get_yearly_review_feeder_handler
       Timeout: 300
 
-  AllDataLogGroup:
+  GetYearlyReviewFeederLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/${AllDataHandler}"
+      LogGroupName: !Sub "/aws/lambda/${GetYearlyReviewFeederHandler}"
       RetentionInDays: 14
 
-  YearlyDataHandler:
+  GetYearlyReviewScoopSavesHandler:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-${Stage}-yearly-data"
-      CodeUri: ./src/handlers/yearly_handler
+      FunctionName: !Sub "${AWS::StackName}-${Stage}-get-yearly-review-scoop-saves"
+      CodeUri: ./src/handlers/get_yearly_review_scoop_saves_handler
       Timeout: 300
 
-  YearlyDataLogGroup:
+  GetYearlyReviewScoopSavesLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/${YearlyDataHandler}"
+      LogGroupName: !Sub "/aws/lambda/${GetYearlyReviewScoopSavesHandler}"
       RetentionInDays: 14
 
-  MonthlyDataHandler:
+  GetYearlyReviewWeightHandler:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-${Stage}-monthly-data"
-      CodeUri: ./src/handlers/monthly_handler
+      FunctionName: !Sub "${AWS::StackName}-${Stage}-get-yearly-review-weight"
+      CodeUri: ./src/handlers/get_yearly_review_weight_handler
       Timeout: 300
 
-  MonthlyDataLogGroup:
+  GetYearlyReviewWeightLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/${MonthlyDataHandler}"
-      RetentionInDays: 14
-
-  WeeklyDataHandler:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${AWS::StackName}-${Stage}-weekly-data"
-      CodeUri: ./src/handlers/weekly_handler
-      Timeout: 300
-
-  WeeklyDataLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${WeeklyDataHandler}"
-      RetentionInDays: 14
-
-  WeightInsightsHandler:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${AWS::StackName}-${Stage}-weight-insights"
-      CodeUri: ./src/handlers/weight_insights
-      Timeout: 300
-
-  WeightInsightsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${WeightInsightsHandler}"
+      LogGroupName: !Sub "/aws/lambda/${GetYearlyReviewWeightHandler}"
       RetentionInDays: 14
 
   AppSyncAPIServiceRole:
@@ -133,7 +107,15 @@ Resources:
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
-                Resource: "*"
+                Resource: !GetAtt GetYearlyReviewFeederHandler.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt GetYearlyReviewScoopSavesHandler.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt GetYearlyReviewWeightHandler.Arn
 
   AppSyncLogGroup:
     Type: AWS::Logs::LogGroup
@@ -184,45 +166,36 @@ Resources:
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
       Definition: |
-        input GetUserInsightsInput @aws_api_key @aws_cognito_user_pools {
-            userId: String!
+        input getYearlyReviewInput {
+          userId: String!
         }
 
-        type MonthlyDataPoint @aws_api_key @aws_cognito_user_pools {
-            start: String!
-            end: String!
-            value: Float
+        type petStatistic {
+          name: String!
+          weight: Int!
+          visits: Int!
         }
 
-        type GeneralDataPoint @aws_api_key @aws_cognito_user_pools {
-            date: String!
-            value: Float
+        type feederStatistic {
+            total: Int!
         }
 
-        type MonthlyChartData @aws_api_key @aws_cognito_user_pools {
-            median: Float!
-            dataPoints: [MonthlyDataPoint]!
+        type scoopSaveStatistic {
+            total: Int!
         }
 
-        type ChartData @aws_api_key @aws_cognito_user_pools {
-            median: Float!
-            dataPoints: [GeneralDataPoint]!
+        type weightStatistic{
+            pets: [petStatistic]!
         }
 
-        type ChartInsights @aws_api_key @aws_cognito_user_pools {
-            petId: String!
-            weeklyData: ChartData
-            monthlyData: MonthlyChartData
-            yearlyData: ChartData
-            allData: ChartData
+        type yearlyReview {
+            weight: weightStatistic!
+            scoopSaves: scoopSaveStatistic!
+            feeder: feederStatistic!
         }
 
-        type UserInsights @aws_api_key @aws_cognito_user_pools {
-            weightInsights: [ChartInsights]!
-        }
-
-        type Query  @aws_api_key @aws_cognito_user_pools {
-            getUserInsights(input: GetUserInsightsInput!): UserInsights!
+        type Query {
+            getYearlyReview(input: getYearlyReviewInput!): yearlyReview!
         }
 
         schema {
@@ -249,7 +222,7 @@ Resources:
           "version" : "2018-05-29",
           "operation" : "PutItem",
           "key" : {
-            "id" : $util.dynamodb.toStringJson("${ctx.source.petId}-${ctx.info.fieldName}")
+            "id" : $util.dynamodb.toStringJson("${ctx.source.arguments.input.userId}-${context.info.fieldName}")
           },
           "attributeValues": {
             "ttl": $util.dynamodb.toNumberJson($ttl),
@@ -274,7 +247,7 @@ Resources:
           "version": "2018-05-29",
           "operation": "GetItem",
           "key": {
-            "id": $util.dynamodb.toStringJson("${ctx.source.petId}-${ctx.info.fieldName}")
+            "id": $util.dynamodb.toStringJson("${context.source.arguments.input.userId}-${context.info.fieldName}")
           }
         }
       ResponseMappingTemplate: |
@@ -288,12 +261,12 @@ Resources:
 
   ## Lambdas function configuration
 
-  AllLambdaPipelineFunction:
+  WeightLambdaPipelineFunction:
     Type: AWS::AppSync::FunctionConfiguration
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: "yearly_lambda_pipeline_function_configuration"
-      DataSourceName: !GetAtt AllDataLambdaDataSource.Name
+      Name: "weight_lambda_pipeline_function_configuration"
+      DataSourceName: !GetAtt GetYearlyReviewWeightLambdaDataSource.Name
       FunctionVersion: "2018-05-29"
       RequestMappingTemplate: |
         #if($ctx.stash.result)
@@ -306,12 +279,12 @@ Resources:
         }
       ResponseMappingTemplate: $util.toJson($ctx.result)
 
-  YearlyLambdaPipelineFunction:
+  ScoopSavesLambdaPipelineFunction:
     Type: AWS::AppSync::FunctionConfiguration
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: "yearly_lambda_pipeline_function_configuration"
-      DataSourceName: !GetAtt YearlyDataLambdaDataSource.Name
+      Name: "scoop_saves_lambda_pipeline_function_configuration"
+      DataSourceName: !GetAtt GetYearlyReviewScoopSavesLambdaDataSource.Name
       FunctionVersion: "2018-05-29"
       RequestMappingTemplate: |
         #if($ctx.stash.result)
@@ -324,30 +297,12 @@ Resources:
         }
       ResponseMappingTemplate: $util.toJson($ctx.result)
 
-  MonthlyLambdaPipelineFunction:
+  FeederLambdaPipelineFunction:
     Type: AWS::AppSync::FunctionConfiguration
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: "monthly_lambda_pipeline_function_configuration"
-      DataSourceName: !GetAtt MonthlyDataLambdaDataSource.Name
-      FunctionVersion: "2018-05-29"
-      RequestMappingTemplate: |
-        #if($ctx.stash.result)
-          #return($ctx.stash.result)
-        #end
-        {
-          "version" : "2018-05-29",
-          "operation": "Invoke",
-          "payload": $util.toJson($ctx)
-        }
-      ResponseMappingTemplate: $util.toJson($ctx.result)
-
-  WeeklyLambdaPipelineFunction:
-    Type: AWS::AppSync::FunctionConfiguration
-    Properties:
-      ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: "weekly_lambda_pipeline_function_configuration"
-      DataSourceName: !GetAtt WeeklyDataLambdaDataSource.Name
+      Name: "feeder_lambda_pipeline_function_configuration"
+      DataSourceName: !GetAtt GetYearlyReviewFeederLambdaDataSource.Name
       FunctionVersion: "2018-05-29"
       RequestMappingTemplate: |
         #if($ctx.stash.result)
@@ -373,106 +328,73 @@ Resources:
         TableName: !Ref CachingAppsyncTable
       ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
 
-  AllDataLambdaDataSource:
+  GetYearlyReviewWeightLambdaDataSource:
     Type: AWS::AppSync::DataSource
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: !Sub "${Stage}_all_data_source"
+      Name: !Sub "${Stage}_get_yearly_review_weight_lambda_data_source"
       Type: AWS_LAMBDA
       LambdaConfig:
-        LambdaFunctionArn: !GetAtt AllDataHandler.Arn
+        LambdaFunctionArn: !GetAtt GetYearlyReviewWeightHandler.Arn
       ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
 
-  YearlyDataLambdaDataSource:
+  GetYearlyReviewScoopSavesLambdaDataSource:
     Type: AWS::AppSync::DataSource
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: !Sub "${Stage}_yearly_data_source"
+      Name: !Sub "${Stage}_get_yearly_review_scoop_saves_lambda_data_source"
       Type: AWS_LAMBDA
       LambdaConfig:
-        LambdaFunctionArn: !GetAtt YearlyDataHandler.Arn
+        LambdaFunctionArn: !GetAtt GetYearlyReviewScoopSavesHandler.Arn
       ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
 
-  MonthlyDataLambdaDataSource:
+  GetYearlyReviewFeederLambdaDataSource:
     Type: AWS::AppSync::DataSource
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: !Sub "${Stage}_monthly_data_source"
+      Name: !Sub "${Stage}_get_yearly_review_feeder_lambda_data_source"
       Type: AWS_LAMBDA
       LambdaConfig:
-        LambdaFunctionArn: !GetAtt MonthlyDataHandler.Arn
+        LambdaFunctionArn: !GetAtt GetYearlyReviewFeederHandler.Arn
       ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
 
-  WeeklyDataLambdaDataSource:
+  GetYearlyReviewLambdaDataSource:
     Type: AWS::AppSync::DataSource
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: !Sub "${Stage}_weekly_data_source"
-      Type: AWS_LAMBDA
-      LambdaConfig:
-        LambdaFunctionArn: !GetAtt WeeklyDataHandler.Arn
-      ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
-
-  WeightInsightsLambdaDataSource:
-    Type: AWS::AppSync::DataSource
-    Properties:
-      ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: !Sub "${Stage}_weight_insights_lambda_data_source"
-      Type: AWS_LAMBDA
-      LambdaConfig:
-        LambdaFunctionArn: !GetAtt WeightInsightsHandler.Arn
-      ServiceRoleArn: !GetAtt AppSyncAPIServiceRole.Arn
-
-  GetUserInsightsLambdaDataSource:
-    Type: AWS::AppSync::DataSource
-    Properties:
-      ApiId: !GetAtt AppSyncAPI.ApiId
-      Name: !Sub "${Stage}_get_user_insights_lambda_data_source"
+      Name: !Sub "${Stage}_get_yearly_review_lambda_data_source"
       Type: NONE
 
   # Resolvers
 
-  GetUserInsightsLambdaDataSourceResolver:
+  GetYearlyReviewResolver:
     Type: AWS::AppSync::Resolver
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
       TypeName: Query
-      FieldName: getUserInsights
-      DataSourceName: !GetAtt GetUserInsightsLambdaDataSource.Name
+      FieldName: getYearlyReview
+      DataSourceName: !GetAtt GetYearlyReviewLambdaDataSource.Name
       RequestMappingTemplate: |
         {
           "version" : "2018-05-29",
           "payload": $util.toJson($ctx)
         }
       ResponseMappingTemplate: |
-        $util.toJson($ctx.result)
-
-  WeightInsightsResolver:
-    Type: AWS::AppSync::Resolver
-    Properties:
-      ApiId: !GetAtt AppSyncAPI.ApiId
-      TypeName: UserInsights
-      FieldName: weightInsights
-      DataSourceName: !GetAtt WeightInsightsLambdaDataSource.Name
-      ResponseMappingTemplate: |
-        #if($ctx.error)
-          $util.error($ctx.error.message, $ctx.error.type)
-        #end
         $util.toJson($ctx.result)
 
   ## Resolvers functions
 
-  WeeklyDataResolver:
+  GetYearlyReviewWeightResolver:
     Type: AWS::AppSync::Resolver
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      TypeName: ChartInsights
-      FieldName: weeklyData
+      TypeName: yearlyReview
+      FieldName: weight
       Kind: PIPELINE
       PipelineConfig:
         Functions:
           - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
-          - !GetAtt WeeklyLambdaPipelineFunction.FunctionId
+          - !GetAtt WeightLambdaPipelineFunction.FunctionId
           - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
       RequestMappingTemplate: |
         {
@@ -485,17 +407,17 @@ Resources:
         #end
         $util.toJson($ctx.result)
 
-  MonthlyDataResolver:
+  GetYearlyReviewFeederResolver:
     Type: AWS::AppSync::Resolver
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      TypeName: ChartInsights
-      FieldName: monthlyData
+      TypeName: yearlyReview
+      FieldName: feeder
       Kind: PIPELINE
       PipelineConfig:
         Functions:
           - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
-          - !GetAtt MonthlyLambdaPipelineFunction.FunctionId
+          - !GetAtt FeederLambdaPipelineFunction.FunctionId
           - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
       RequestMappingTemplate: |
         {
@@ -508,40 +430,17 @@ Resources:
         #end
         $util.toJson($ctx.result)
 
-  YearlyDataResolver:
+  GetYearlyReviewScoopSavesResolver:
     Type: AWS::AppSync::Resolver
     Properties:
       ApiId: !GetAtt AppSyncAPI.ApiId
-      TypeName: ChartInsights
-      FieldName: yearlyData
+      TypeName: yearlyReview
+      FieldName: scoopSaves
       Kind: PIPELINE
       PipelineConfig:
         Functions:
           - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
-          - !GetAtt YearlyLambdaPipelineFunction.FunctionId
-          - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
-      RequestMappingTemplate: |
-        {
-          "version" : "2018-05-29",
-          "payload": $util.toJson($ctx)
-        }
-      ResponseMappingTemplate: |
-        #if($ctx.error)
-          $util.error($ctx.error.message, $ctx.error.type)
-        #end
-        $util.toJson($ctx.result)
-
-  AllDataResolver:
-    Type: AWS::AppSync::Resolver
-    Properties:
-      ApiId: !GetAtt AppSyncAPI.ApiId
-      TypeName: ChartInsights
-      FieldName: allData
-      Kind: PIPELINE
-      PipelineConfig:
-        Functions:
-          - !GetAtt GetCacheFromDynamoDBFunctionConfiguration.FunctionId
-          - !GetAtt AllLambdaPipelineFunction.FunctionId
+          - !GetAtt ScoopSavesLambdaPipelineFunction.FunctionId
           - !GetAtt SaveCacheToDynamoDBFunctionConfiguration.FunctionId
       RequestMappingTemplate: |
         {
