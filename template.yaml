@@ -244,9 +244,26 @@ Resources:
         #if($ctx.stash.result)
           #return($ctx.stash.result)
         #end
-        #set($endOfDayDateStr = "$!{util.time.nowFormatted("yyyy-MM-dd", "UTC")}T23:59:59Z")
-        #set($endOfDayEpoch = $util.time.parseFormattedToEpochSeconds($endOfDayDateStr, "yyyy-MM-dd'T'HH:mm:ss'Z'"))
-        #set($ttl = $endOfDayEpoch * 1000)
+        #set($Integer = 0)
+        #set($currentDate = $util.time.nowFormatted("yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC"))
+        ## Setting cache days
+        #if($ctx.info.fieldName == "yearlyData")
+          #set($year = $Integer.parseInt($util.time.nowFormatted("yyyy", "UTC")))
+          #set($month = $Integer.parseInt($util.time.nowFormatted("MM", "UTC")) + 1)
+          #if($month == 13)
+            #set($year = $year + 1)
+            #set($month = 1)
+          #end
+          #if($month < 10)
+            #set($monthStr = "0" + $month.toString())
+          #else
+            #set($monthStr = $month.toString())
+          #end
+          #set($ttlAsISO = $year.toString() + "-" + $monthStr + "-01" + "T00:00:00Z")
+        #else
+          #set($ttlAsISO = $util.time.nowFormatted("yyyy-MM-dd", "UTC") + "T23:59:59Z")
+        #end
+        #set($ttl = $util.time.parseISO8601ToEpochMilliSeconds($ttlAsISO))
         {
           "version" : "2018-05-29",
           "operation" : "PutItem",
